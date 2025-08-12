@@ -1290,6 +1290,7 @@
                     <button class="combat-button" id="special-btn">Special</button>
                     <button class="combat-button" id="flee-btn">Attempt Flee</button>
                     <button class="combat-button" id="act-btn">Act</button>
+                    <button class="combat-button" id="dodge-roll-btn" style="display: none; background-color: var(--hell-success);">Dodge Roll!</button>
                 </div>
             </div>
 
@@ -1902,6 +1903,7 @@
             specialBtn: document.getElementById("special-btn"),
             fleeBtn: document.getElementById("flee-btn"),
             actBtn: document.getElementById("act-btn"),
+            dodgeRollBtn: document.getElementById("dodge-roll-btn"),
 
             combatActScreen: document.getElementById("combat-act-screen"),
             actUseItemBtn: document.getElementById("act-use-item-btn"),
@@ -2090,6 +2092,14 @@
             elements.specialBtn.addEventListener("click", () => gameState.activePlayer && useSpecialPower(gameState.activePlayer));
             elements.fleeBtn.addEventListener("click", () => gameState.activePlayer && fleeCombat(gameState.activePlayer));
             elements.actBtn.addEventListener("click", showCombatActMenu);
+            elements.dodgeRollBtn.addEventListener("click", () => {
+                if (!gameState.combat.active || gameState.combat.playerTurn || gameState.activePlayer.isAI) return;
+
+                elements.dodgeRollBtn.disabled = true;
+                rollDice((roll) => {
+                    resolveEnemyAttack(gameState.activePlayer, roll);
+                });
+            });
 
             elements.actUseItemBtn.addEventListener("click", () => showInventoryForCombat(gameState.activePlayer));
             elements.actManeuverBtn.addEventListener("click", () => useCombatManeuver(gameState.activePlayer));
@@ -3311,8 +3321,8 @@
             }
             if (player.statusEffects.confused && Number(player.statusEffects.confused) > 0 && Math.random() < 0.5) {
                 addCombatLog(`${player.name} is confused and can't focus the attack!`, "log-warning", player);
-                player.statusEffects.confused = Number(player.statusEffects.confused) -1;
-                 gameState.combat.playerTurn = false;
+                player.statusEffects.confused = Number(player.statusEffects.confused) - 1;
+                gameState.combat.playerTurn = false;
                 setTimeout(() => enemyTurnSequence(player), 1000);
                 return;
             }
@@ -3323,62 +3333,191 @@
             let isCriticalHit = attackRoll === 20 || player.nextAttackCritical;
             let isCriticalMiss = attackRoll === 1;
 
-            if (player.nextAttackCritical) { delete player.nextAttackCritical; }
+            if (player.nextAttackCritical) {
+                delete player.nextAttackCritical;
+            }
 
-            let message = ""; let logClass = "log-neutral"; let damage = 0;
+            // --- Initial Expressions based on roll ---
+            if (attackRoll <= 5) {
+                elements.playerCombatExpression.textContent = `(o_O)`; // Worried
+            } else if (attackRoll < 15) {
+                elements.playerCombatExpression.textContent = `(-_-)`; // Neutral
+            } else {
+                elements.playerCombatExpression.textContent = `(⌐■_■)`; // Confident
+            }
+            elements.enemyCombatExpression.textContent = `(O_o)`; // Watching
+
+            let message = "";
+            let logClass = "log-neutral";
+            let damage = 0;
 
             const evasiveBonus = (gameState.combat.enemy.statusEffects.evasive && Number(gameState.combat.enemy.statusEffects.evasive) > 0) ? 5 : 0;
             const targetAC = Number(gameState.combat.enemy.ac) + evasiveBonus;
 
+            // Use a short timeout to allow initial expression to be seen
+            setTimeout(() => {
+                if (isCriticalMiss) {
+                    message = `${player.name} fumbles the attack! It's a critical miss.`;
+                    logClass = "log-bad";
+                    elements.playerCombatExpression.textContent = `(ಥ_ಥ)`; // Crying
+                    elements.enemyCombatExpression.textContent = `(>▽<)`; // Laughing hard
+                } else if (toHit >= targetAC) {
+                    damage = parseDamageDice("1d8") + Math.floor(Number(player.attack) / 2);
+
+                    let damageMultiplier = 1;
+                    if (Number(attackRoll) >= 12) damageMultiplier = 4;
+                    else if (Number(attackRoll) >= 10 && Number(attackRoll) <= 11) damageMultiplier = 2;
+                    damage *= damageMultiplier;
+
+                    if (isCriticalHit) {
+                        damage *= 2;
+                        message = `CRITICAL HIT! ${player.name}'s attack strikes true, dealing ${damage} damage!`;
+                        logClass = "log-good";
+                        elements.playerCombatExpression.textContent = `(>▽<)`; // Ecstatic
+                        elements.enemyCombatExpression.textContent = `(X_X)`; // Dead
+                    } else {
+                        message = `${player.name} hits for ${damage} damage.`;
+                        logClass = "log-good";
+                        // If they rolled low but still hit, they are happy
+                        if (attackRoll <= 8) {
+                            elements.playerCombatExpression.textContent = `(^_^)`; // Happy
+                            elements.enemyCombatExpression.textContent = `(T_T)`; // Sad
+                        } else {
+                            elements.playerCombatExpression.textContent = `(⌐■_■)`; // Cool
+                            elements.enemyCombatExpression.textContent = `(T_T)`; // Sad
+                        }
+                    }
+
+                    if (Number(attackRoll) <= 5 && Number(rollD12()) > (Number(attackRoll) + 1)) {
+                        const reflectedDamage = Math.floor(damage * 0.5);
+                        player.hp = Math.max(0, Number(player.hp) - reflectedDamage);
+                        addCombatLog(`${player.name}'s attack is parried and reflects back, dealing ${reflectedDamage} damage!`, "log-danger", player);
+                        updatePlayerUI();
+                        if (Number(player.hp) <= 0) {
+                            endCombat(false, player);
+                            return;
+                        }
+                    }
+
+                    gameState.combat.enemy.hp = Math.max(0, Number(gameState.combat.enemy.hp) - damage);
+                    updateCombatUI(player);
+                    if (Number(gameState.combat.enemy.hp) <= 0) {
+                        endCombat(true, player);
+                        return;
+                    }
+                } else {
+                    message = `${player.name}'s attack misses!`;
+                    logClass = "log-bad";
+                    elements.playerCombatExpression.textContent = `(¬_¬)`; // Annoyed
+                    elements.enemyCombatExpression.textContent = `(^_^;)`; // Smug sweatdrop
+                }
+                addCombatLog(message, logClass, player);
+
+                gameState.combat.playerTurn = false;
+                setTimeout(() => enemyTurnSequence(player), 1000);
+            }, 750); // 0.75s delay for reaction
+        }
+
+        function resolveEnemyAttack(player, dodgeRoll = null) {
+            if (!gameState.combat.active) return;
+            const enemy = gameState.combat.enemy;
+
+            // Hide dodge button and clear timeout
+            elements.dodgeRollBtn.style.display = 'none';
+            if (gameState.combat.dodgeTimeout) {
+                clearTimeout(gameState.combat.dodgeTimeout);
+                delete gameState.combat.dodgeTimeout;
+            }
+
+            const attackRoll = rollD20();
+            let toHit = Number(attackRoll) + Number(enemy.toHitBonus);
+            let isCriticalHit = attackRoll === 20;
+            let isCriticalMiss = attackRoll === 1;
+
+            let message = "";
+            let logClass = "log-neutral";
+            let damage = 0;
+
+            // Calculate damage reduction from dodge
+            let damageReduction = 0;
+            if (dodgeRoll) {
+                const dodgeSuccessThreshold = 10; // Base difficulty to get any benefit
+                if (dodgeRoll >= dodgeSuccessThreshold) {
+                    damageReduction = (dodgeRoll - dodgeSuccessThreshold + 1) * 0.1; // 10% reduction per point over threshold
+                    damageReduction = Math.min(damageReduction, 1.0); // Cap at 100% reduction
+                    addCombatLog(`${player.name} rolls to dodge and prepares to mitigate incoming damage!`, 'log-good', player);
+                } else {
+                    addCombatLog(`${player.name} stumbles on the dodge roll!`, 'log-bad', player);
+                }
+            }
+
+            const evasiveBonus = (player.statusEffects.evasive && Number(player.statusEffects.evasive) > 0) ? 5 : 0;
+            const targetAC = Number(player.defense) + evasiveBonus;
+
             if (isCriticalMiss) {
-                message = `${player.name} fumbles the attack! It's a critical miss.`; logClass = "log-bad";
-                elements.playerCombatExpression.textContent = `(o_O)`;
-                elements.enemyCombatExpression.textContent = `(^_^)`;
+                message = `${enemy.name}'s attack critically misses!`;
+                logClass = "log-good";
             } else if (toHit >= targetAC) {
-                damage = parseDamageDice("1d8") + Math.floor(Number(player.attack) / 2);
-
-                let damageMultiplier = 1;
-                if (Number(attackRoll) >= 12) damageMultiplier = 4;
-                else if (Number(attackRoll) >= 10 && Number(attackRoll) <= 11) damageMultiplier = 2;
-
-                damage *= damageMultiplier;
-
+                damage = parseDamageDice(enemy.damageDice);
                 if (isCriticalHit) {
                     damage *= 2;
-                    message = `CRITICAL HIT! ${player.name}'s attack strikes true, dealing ${damage} damage!`; logClass = "log-good";
-                    elements.playerCombatExpression.textContent = `(>▽<)`;
-                    elements.enemyCombatExpression.textContent = `(X_X)`;
+                    message = `DEVASTATING BLOW! ${enemy.name} hits ${player.name}!`;
+                    logClass = "log-danger";
                 } else {
-                    message = `${player.name} hits the enemy for ${damage} damage.`; logClass = "log-good";
-                    elements.playerCombatExpression.textContent = `(⌐■_■)`;
-                    elements.enemyCombatExpression.textContent = `(T_T)`;
+                    message = `${enemy.name} attacks ${player.name}.`;
+                    logClass = "log-bad";
                 }
+
+                if (damageReduction > 0) {
+                    const reducedAmount = Math.floor(damage * damageReduction);
+                    damage -= reducedAmount;
+                    message += ` You successfully dodged to reduce the damage by ${reducedAmount}!`;
+                    logClass = 'log-good';
+                }
+
+                message += ` You take ${damage} damage.`;
+                player.hp = Math.max(0, Number(player.hp) - damage);
 
                 if (Number(attackRoll) <= 5 && Number(rollD12()) > (Number(attackRoll) + 1)) {
                     const reflectedDamage = Math.floor(damage * 0.5);
-                    player.hp = Math.max(0, Number(player.hp) - reflectedDamage);
-                    addCombatLog(`${player.name}'s attack is parried and reflects back, dealing ${reflectedDamage} damage!`, "log-danger", player);
-                    updatePlayerUI();
-                    if (Number(player.hp) <= 0) { endCombat(false, player); return; }
+                    enemy.hp = Math.max(0, Number(enemy.hp) - reflectedDamage);
+                    addCombatLog(`${enemy.name}'s attack is clumsy and damages itself for ${reflectedDamage}!`, "log-neutral", player);
+                    updateCombatUI(player);
+                    if (Number(enemy.hp) <= 0) {
+                        endCombat(true, player);
+                        return;
+                    }
                 }
-
-                gameState.combat.enemy.hp = Math.max(0, Number(gameState.combat.enemy.hp) - damage);
-                updateCombatUI(player);
-                if (Number(gameState.combat.enemy.hp) <= 0) { endCombat(true, player); return; }
             } else {
-                message = `${player.name}'s attack misses ${gameState.combat.enemy.name}!`; logClass = "log-bad";
-                elements.playerCombatExpression.textContent = `(¬_¬)`;
-                elements.enemyCombatExpression.textContent = `(^_^;)`;
+                message = `${enemy.name}'s attack misses ${player.name}!`;
+                logClass = "log-good";
             }
-            addCombatLog(message, logClass, player);
 
-            gameState.combat.playerTurn = false;
-            setTimeout(() => enemyTurnSequence(player), 1000);
+            addCombatLog(message, logClass, player);
+            updatePlayerUI();
+
+            if (Number(player.hp) <= 0) {
+                endCombat(false, player);
+            } else {
+                gameState.combat.playerTurn = true;
+                // Re-enable player combat buttons
+                elements.attackBtn.disabled = false;
+                elements.specialBtn.disabled = Number(player.powerSegments) < 3 || Number(player.mana) < 100;
+                elements.fleeBtn.disabled = false;
+                elements.actBtn.disabled = false;
+            }
         }
 
         async function enemyTurnSequence(player) {
             if (!gameState.combat.active) return;
             const enemy = gameState.combat.enemy;
+
+            // Disable player combat buttons during enemy turn
+            elements.attackBtn.disabled = true;
+            elements.specialBtn.disabled = true;
+            elements.fleeBtn.disabled = true;
+            elements.actBtn.disabled = true;
+            elements.dodgeRollBtn.style.display = 'none';
 
             // Process enemy status effects
             for (const effect in enemy.statusEffects) {
@@ -3401,15 +3540,16 @@
                 enemy.hp = Math.max(0, Number(enemy.hp) - 100);
                 addCombatLog(`${enemy.name} takes 100 burning damage! Remaining HP: ${enemy.hp}`, "log-danger", player);
                 updateCombatUI(player);
-                if (Number(enemy.hp) <= 0) { endCombat(true, player); return; }
+                if (Number(enemy.hp) <= 0) {
+                    endCombat(true, player);
+                    return;
+                }
             }
             if (enemy.statusEffects.weakened && Number(enemy.statusEffects.weakened) > 0) {
-                 addCombatLog(`${enemy.name} is weakened, reducing their effectiveness!`, "log-neutral", player);
-                 // Actual effect already applied by Zestial, this is just for log
+                addCombatLog(`${enemy.name} is weakened, reducing their effectiveness!`, "log-neutral", player);
             }
 
-
-            // Enemy Flee Logic: Try to flee if HP is very low and not fearless
+            // Enemy Flee Logic
             const fleeThreshold = Number(enemy.maxHp) * 0.25;
             if (Number(enemy.hp) < fleeThreshold && Number(enemy.cowardice) > Math.random() * 100) {
                 addCombatLog(`${enemy.name} looks scared and attempts to flee!`, "log-warning", player);
@@ -3422,13 +3562,13 @@
                     return;
                 } else {
                     addCombatLog(`${enemy.name} fails to escape and is caught off guard!`, "log-bad", player);
-                    setTimeout(() => playerAttack(player), 500);
-                    await new Promise(resolve => setTimeout(resolve, 1500));
-                    if (!gameState.combat.active) return;
+                    // Player gets a free attack of opportunity
+                    playerAttack(player);
+                    return;
                 }
             }
 
-            // Enemy Special Ability Logic: AI uses special if ready and advantageous
+            // Enemy Special Ability Logic
             if (enemy.abilities && enemy.abilities.recharge) {
                 if (enemy.recharge[enemy.abilities.specialAttack] === undefined) {
                     enemy.recharge[enemy.abilities.specialAttack] = 0;
@@ -3450,57 +3590,41 @@
                     if (enemy.abilities.specialEffect === "fire_burst" && Math.random() < 0.8) shouldUseSpecial = true;
 
                     if (shouldUseSpecial) {
-                         addCombatLog(`${enemy.name} uses ${enemy.abilities.specialAttack}!`, "log-special", player);
+                        addCombatLog(`${enemy.name} uses ${enemy.abilities.specialAttack}!`, "log-special", player);
                         handleEnemySpecialEffect(enemy, player, addCombatLog);
-                        enemy.recharge[enemy.abilities.specialAttack] = Number(enemy.abilities.rechargeRate); // Set cooldown
+                        enemy.recharge[enemy.abilities.specialAttack] = Number(enemy.abilities.rechargeRate);
                         updateCombatUI(player);
-                        if (Number(player.hp) <= 0) { endCombat(false, player); return; }
-                        gameState.combat.playerTurn = true; return;
+                        if (Number(player.hp) <= 0) {
+                            endCombat(false, player);
+                            return;
+                        }
+                        gameState.combat.playerTurn = true;
+                        return;
                     }
                 } else {
-                    enemy.recharge[enemy.abilities.specialAttack] = Number(enemy.recharge[enemy.abilities.specialAttack]) - 1;
+                    enemy.recharge[enemy.abilities.specialAttack]--;
                 }
             }
 
-            // Normal enemy attack
-            const attackRoll = rollD20();
-            let toHit = Number(attackRoll) + Number(enemy.toHitBonus);
-            let isCriticalHit = attackRoll === 20;
-            let isCriticalMiss = attackRoll === 1;
+            // Prepare for a normal attack
+            addCombatLog(`${enemy.name} prepares to strike!`, 'log-warning', player);
 
-            let message = ""; let logClass = "log-neutral"; let damage = 0;
+            // Show dodge button for human players
+            if (!player.isAI) {
+                elements.dodgeRollBtn.style.display = 'block';
+                elements.dodgeRollBtn.disabled = false;
 
-            const evasiveBonus = (player.statusEffects.evasive && Number(player.statusEffects.evasive) > 0) ? 5 : 0;
-            const targetAC = Number(player.defense) + evasiveBonus;
-
-            if (isCriticalMiss) {
-                message = `${enemy.name}'s attack critically misses!`; logClass = "log-good";
-            } else if (toHit >= targetAC) {
-                damage = parseDamageDice(enemy.damageDice);
-                if (isCriticalHit) {
-                    damage *= 2;
-                    message = `DEVASTATING BLOW! ${enemy.name} hits ${player.name} for ${damage} damage!`; logClass = "log-bad";
-                } else {
-                    message = `${enemy.name} attacks ${player.name} for ${damage} damage.`; logClass = "log-bad";
-                }
-                player.hp = Math.max(0, Number(player.hp) - damage);
-
-                if (Number(attackRoll) <= 5 && Number(rollD12()) > (Number(attackRoll) + 1)) {
-                    const reflectedDamage = Math.floor(damage * 0.5);
-                    enemy.hp = Math.max(0, Number(enemy.hp) - reflectedDamage);
-                    addCombatLog(`${enemy.name}'s attack is clumsy and damages itself for ${reflectedDamage}!`, "log-neutral", player);
-                    updateCombatUI(player);
-                    if (Number(enemy.hp) <= 0) { endCombat(true, player); return; }
-                }
-
+                gameState.combat.dodgeTimeout = setTimeout(() => {
+                    if (gameState.combat.active && !gameState.combat.playerTurn) {
+                        addCombatLog("You were too slow to react!", "log-bad", player);
+                        resolveEnemyAttack(player);
+                    }
+                }, 4000); // 4-second window
             } else {
-                message = `${enemy.name}'s attack misses ${player.name}!`; logClass = "log-good";
+                // AI will "decide" to dodge or not instantly and resolve
+                const aiDodgeRoll = (Math.random() < 0.5) ? rollD12() : null; // AI has a 50% chance to try and dodge
+                setTimeout(() => resolveEnemyAttack(player, aiDodgeRoll), 1000);
             }
-            addCombatLog(message, logClass, player);
-            updatePlayerUI();
-
-            if (Number(player.hp) <= 0) { endCombat(false, player); }
-            else { gameState.combat.playerTurn = true; }
         }
 
         // Handle specific enemy special effects
