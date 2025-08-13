@@ -1316,10 +1316,17 @@
             <!-- Poker Screen -->
             <div class="poker-screen" id="poker-screen">
                 <div class="poker-info">
-                    <div>Opponent: <span id="poker-opponent">Husk</span></div>
-                    <div>Bet: <span id="poker-bet">0</span></div>
+                    <div class="combatant">
+                        <div class="combatant-name">You</div>
+                        <div class="combatant-expression" id="poker-player-expression">(-_-)</div>
+                        <div>Money: <span id="poker-money">0</span></div>
+                    </div>
+                    <div class="combatant">
+                        <div class="combatant-name" id="poker-opponent">Husk</div>
+                        <div class="combatant-expression" id="poker-opponent-expression">(-_-)</div>
+                        <div>Bet: <span id="poker-bet">0</span></div>
+                    </div>
                 </div>
-                <div>Your Money: <span id="poker-money">0</span></div>
                 <div class="poker-rounds" id="poker-rounds">
                     <div class="poker-round">1</div>
                     <div class="poker-round">2</div>
@@ -1581,7 +1588,9 @@
             "Zestial's Whispering Scroll": {name: "Zestial's Whispering Scroll", type: "artifact", rarity: "purple", effect: {fear_debuff_chance: true}, price: 60000, description: "Artifact. Low chance to fear-debuff opponents in combat (uses mana).", isArtifact: true},
 
             "Deadly Watch": { name: "Deadly Watch", rarity: "red", type: "artifact", use: "summonVortex", description: "An ancient watch that absorbs demon souls. A wicked soul is trapped within.", isArtifact: true },
-            "Alastor's Forbidden Broadcast": { name: "Alastor's Forbidden Broadcast", rarity: "black", type: "artifact", use: "playRecord", charges: 3, maxCharges: 3, description: "A record of Alastor's final scream. Listening to it is... unwise.", isArtifact: true, curse: "audience" }
+            "Alastor's Forbidden Broadcast": { name: "Alastor's Forbidden Broadcast", rarity: "black", type: "artifact", use: "playRecord", charges: 3, maxCharges: 3, description: "A record of Alastor's final scream. Listening to it is... unwise.", isArtifact: true, curse: "audience" },
+            "Vial of Wrath": { name: "Vial of Wrath", type: "consumable", rarity: "green", effect: { buff: 'Wrath', attack: 7, defense: -5, duration: 3 }, price: 200, description: "Consume to gain +7 Attack but -5 Defense for 3 turns." },
+            "Shadow Grenade": { name: "Shadow Grenade", type: "consumable", rarity: "blue", effect: { debuff: 'Blinded', duration: 2 }, price: 450, description: "Use in combat to attempt to blind an enemy for 2 turns, reducing their accuracy." }
         };
 
         // Quest Definitions
@@ -1603,6 +1612,33 @@
                 target: 'Strange Dust',
                 targetCount: 3,
                 reward: { xp: 100, money: 500, item: "Cherri's Bomb Fragment" }
+            },
+            "main_find_hotel": {
+                id: "main_find_hotel",
+                title: "A Glimmer of Hope",
+                description: "You're new to this infernal pit. Rumors speak of a 'Hazbin Hotel,' a place for redemption. It's a long shot, but it's the only one you've got. Find the hotel.",
+                type: 'reach',
+                target: 'Hazbin Hotel',
+                targetCount: 1, // Find it once
+                reward: { xp: 500, money: 1000, prestige: 5 }
+            },
+            "alastor_sow_chaos": {
+                id: "alastor_sow_chaos",
+                title: "A Little Entertainment",
+                description: "Alastor is bored. He'd like you to 'liven things up' by instigating 2 fights with other sinners.",
+                type: 'action',
+                target: 'fight_player',
+                targetCount: 2,
+                reward: { xp: 200, fear: 2, item: "Cursed Grimoire" }
+            },
+            "charlie_help_sinner": {
+                id: "charlie_help_sinner",
+                title: "Every Soul Matters",
+                description: "Charlie wants you to embody the spirit of the hotel. Help 2 other sinners in need.",
+                type: 'action',
+                target: 'help_player',
+                targetCount: 2,
+                reward: { xp: 200, persuasion: 2, item: "Vaggie's Spear Fragment" }
             }
         };
 
@@ -1921,6 +1957,8 @@
             pokerLog: document.getElementById("poker-log"),
             pokerRollBtn: document.getElementById("poker-roll-btn"),
             pokerLeaveBtn: document.getElementById("poker-leave-btn"),
+            pokerPlayerExpression: document.getElementById("poker-player-expression"),
+            pokerOpponentExpression: document.getElementById("poker-opponent-expression"),
 
             searchScreen: document.getElementById("search-screen"),
             searchProgress: document.getElementById("search-progress"),
@@ -2185,6 +2223,7 @@
                     isTraining: null,
                     combatManeuver: playerClass.combatManeuver
                 };
+                player.quests.push({ id: 'main_find_hotel', currentCount: 0 });
                 gameState.players.push(player);
                 playerCounter++;
             });
@@ -2225,6 +2264,7 @@
                     isTraining: null,
                     combatManeuver: playerClass.combatManeuver
                 };
+                player.quests.push({ id: 'main_find_hotel', currentCount: 0 });
                 gameState.players.push(player);
                 playerCounter++;
             }
@@ -3032,8 +3072,18 @@
 
             player.quests.forEach(quest => {
                 const questDef = questDefinitions[quest.id];
-                if (questDef.type === 'kill' && questDef.type === actionType && questDef.target === targetName) {
+                if (!questDef) return;
+
+                let progressMade = false;
+                if (questDef.type === 'kill' && actionType === 'kill' && questDef.target === targetName) {
                     quest.currentCount++;
+                    progressMade = true;
+                } else if (questDef.type === 'action' && actionType === questDef.target) {
+                    quest.currentCount++;
+                    progressMade = true;
+                }
+
+                if (progressMade) {
                     addLogEntry(`Quest progress for "${questDef.title}": ${quest.currentCount}/${questDef.targetCount}`, "log-good", player);
                     if (quest.currentCount >= questDef.targetCount) {
                         completeQuest(player, quest);
@@ -3238,10 +3288,12 @@
                 player.hp -= hpToGive;
                 targetPlayer.hp = Math.min(targetPlayer.maxHp, targetPlayer.hp + hpToGive);
                 addLogEntry(`${player.name} helps ${targetPlayer.name}, transferring ${hpToGive} HP.`, "log-good", player);
+                updateQuestProgress(player, 'help_player');
                 updatePlayerUI();
                 completeAction(player);
             } else { // fight
                 addLogEntry(`${player.name} attacks ${targetPlayer.name}! A sinner-on-sinner skirmish breaks out!`, "log-danger", player);
+                updateQuestProgress(player, 'fight_player');
 
                 // Simplified combat round
                 let attackRoll = rollD20();
@@ -3315,15 +3367,38 @@
         function checkForRandomEvent(player, roll) {
             const events = [
                 // --- Bad Scenarios ---
-                { text: "You stumble into an acidic pool! It burns!", effect: () => { player.hp = Math.max(0, Number(player.hp) - (Math.floor(Math.random() * 15) + 10)); }, logClass: "log-danger" },
-                { text: "A territorial Imp clan ambushes you!", effect: () => startCombat("normal", player), logClass: "log-bad" },
-                { text: "A cunning demon tricks you and steals some money!", effect: () => {
-                    if (Number(player.persuasion) > (rollD6() + rollD6())) {
-                        addLogEntry("...but you see through their deception and avoid the trap!", "log-good", player);
+                { text: "You stumble towards an acidic pool!", effect: () => {
+                    const speedCheck = (rollD6() + rollD6());
+                    if (Number(player.speed) > speedCheck) {
+                        addLogEntry("...but your quick reflexes help you dodge the worst of it, taking minimal damage!", "log-good", player);
+                        player.hp = Math.max(0, Number(player.hp) - (Math.floor(Math.random() * 5) + 1));
                     } else {
+                        addLogEntry("You fall in! The acid burns!", "log-danger", player);
+                        player.hp = Math.max(0, Number(player.hp) - (Math.floor(Math.random() * 15) + 10));
+                    }
+                }, logClass: "log-neutral" },
+                { text: "A territorial Imp clan prepares to ambush you!", effect: () => {
+                    const fearCheck = (rollD6() + rollD6());
+                    if (Number(player.fear) > fearCheck) {
+                        addLogEntry("...but they see you, quail in terror, and flee into the shadows!", "log-good", player);
+                    } else {
+                        addLogEntry("They leap from the shadows to attack!", "log-bad", player);
+                        startCombat("normal", player);
+                    }
+                }, logClass: "log-neutral" },
+                { text: "A cunning demon tries to trick you!", effect: () => {
+                    const checkRoll = rollD6() + rollD6();
+                    if (Number(player.persuasion) > checkRoll) {
+                        addLogEntry("...but you see through their deception and turn the tables, gaining money!", "log-good", player);
+                        player.money += (Math.floor(Math.random() * 50) + 20);
+                    } else if (Number(player.fear) > checkRoll) {
+                        addLogEntry("...but your terrifying presence scares them off before they can act!", "log-good", player);
+                    }
+                    else {
+                        addLogEntry("You fall for their trick and they steal some of your money!", "log-bad", player);
                         player.money = Math.max(0, Number(player.money) - (Math.floor(Math.random() * 50) + 20));
                     }
-                }, logClass: "log-bad" },
+                }, logClass: "log-neutral" },
                 { text: "The air grows heavy and you feel a debilitating curse settle upon you.", effect: () => applyBuff(player, 'Curse', { defense: -2, duration: 3 }), logClass: "log-danger" },
                 { text: "You are caught in a soul-storm, draining your energy.", effect: () => { player.mana = Math.max(0, player.mana - 20); }, logClass: "log-bad" },
 
@@ -3365,7 +3440,9 @@
                 { text: "You stumble upon a hidden, makeshift gym. A hulking demon eyes you.", effect: () => {
                     const gymTrainer = { name: "Krunk, the Trainer", type: "trainer", stats: { persuasion: 15 }, disposition: "neutral" };
                     startInteraction(player, gymTrainer);
-                }, logClass: "log-special" }
+                }, logClass: "log-special" },
+                { text: "You find a glowing sigil on the ground. Touching it fills you with infernal speed!", effect: () => applyBuff(player, 'Haste', { speed: 5, duration: 2 }), logClass: "log-special" },
+                { text: "The oppressive atmosphere of this circle of Hell seeps into your bones, making you sluggish.", effect: () => applyBuff(player, 'Sluggish', { speed: -3, duration: 3 }), logClass: "log-danger" }
             ];
 
             const chosenEvent = events.randomElement();
@@ -3648,7 +3725,6 @@
             if (!gameState.combat.active) return;
             const enemy = gameState.combat.enemy;
 
-            // Hide dodge button and clear timeout
             elements.dodgeRollBtn.style.display = 'none';
             if (gameState.combat.dodgeTimeout) {
                 clearTimeout(gameState.combat.dodgeTimeout);
@@ -3657,81 +3733,98 @@
 
             const attackRoll = rollD20();
             let toHit = Number(attackRoll) + Number(enemy.toHitBonus);
+
+            if (enemy.statusEffects['Blinded'] && enemy.statusEffects['Blinded'].duration > 0) {
+                addCombatLog(`${enemy.name} is blinded and attacks with disadvantage!`, 'log-warning', player);
+                toHit -= 5; // A simple penalty for being blinded
+            }
+
             let isCriticalHit = attackRoll === 20;
             let isCriticalMiss = attackRoll === 1;
 
-            let message = "";
-            let logClass = "log-neutral";
-            let damage = 0;
-
-            // Calculate damage reduction from dodge
-            let damageReduction = 0;
-            if (dodgeRoll) {
-                const dodgeSuccessThreshold = 10; // Base difficulty to get any benefit
-                if (dodgeRoll >= dodgeSuccessThreshold) {
-                    damageReduction = (dodgeRoll - dodgeSuccessThreshold + 1) * 0.1; // 10% reduction per point over threshold
-                    damageReduction = Math.min(damageReduction, 1.0); // Cap at 100% reduction
-                    addCombatLog(`${player.name} rolls to dodge and prepares to mitigate incoming damage!`, 'log-good', player);
-                } else {
-                    addCombatLog(`${player.name} stumbles on the dodge roll!`, 'log-bad', player);
-                }
+            if (attackRoll <= 5) {
+                elements.enemyCombatExpression.textContent = `(o_O)`;
+            } else if (attackRoll < 15) {
+                elements.enemyCombatExpression.textContent = `(-_-)`;
+            } else {
+                elements.enemyCombatExpression.textContent = `(⌐■_■)`;
             }
+            elements.playerCombatExpression.textContent = `(O_o)`;
 
-            const evasiveBonus = (player.statusEffects.evasive && Number(player.statusEffects.evasive) > 0) ? 5 : 0;
-            const targetAC = Number(player.defense) + evasiveBonus;
+            setTimeout(() => {
+                let message = "";
+                let logClass = "log-neutral";
+                let damage = 0;
 
-            if (isCriticalMiss) {
-                message = `${enemy.name}'s attack critically misses!`;
-                logClass = "log-good";
-            } else if (toHit >= targetAC) {
-                damage = parseDamageDice(enemy.damageDice);
-                if (isCriticalHit) {
-                    damage *= 2;
-                    message = `DEVASTATING BLOW! ${enemy.name} hits ${player.name}!`;
-                    logClass = "log-danger";
-                } else {
-                    message = `${enemy.name} attacks ${player.name}.`;
-                    logClass = "log-bad";
-                }
-
-                if (damageReduction > 0) {
-                    const reducedAmount = Math.floor(damage * damageReduction);
-                    damage -= reducedAmount;
-                    message += ` You successfully dodged to reduce the damage by ${reducedAmount}!`;
-                    logClass = 'log-good';
-                }
-
-                message += ` You take ${damage} damage.`;
-                player.hp = Math.max(0, Number(player.hp) - damage);
-
-                if (Number(attackRoll) <= 5 && (rollD6() + rollD6()) > (Number(attackRoll) + 1)) {
-                    const reflectedDamage = Math.floor(damage * 0.5);
-                    enemy.hp = Math.max(0, Number(enemy.hp) - reflectedDamage);
-                    addCombatLog(`${enemy.name}'s attack is clumsy and damages itself for ${reflectedDamage}!`, "log-neutral", player);
-                    updateCombatUI(player);
-                    if (Number(enemy.hp) <= 0) {
-                        endCombat(true, player);
-                        return;
+                let damageReduction = 0;
+                if (dodgeRoll) {
+                    const dodgeSuccessThreshold = 10;
+                    if (dodgeRoll >= dodgeSuccessThreshold) {
+                        damageReduction = (dodgeRoll - dodgeSuccessThreshold + 1) * 0.1;
+                        damageReduction = Math.min(damageReduction, 1.0);
+                        addCombatLog(`${player.name} dodges, mitigating the attack!`, 'log-good', player);
+                    } else {
+                        addCombatLog(`${player.name} stumbles on the dodge!`, 'log-bad', player);
                     }
                 }
-            } else {
-                message = `${enemy.name}'s attack misses ${player.name}!`;
-                logClass = "log-good";
-            }
 
-            addCombatLog(message, logClass, player);
-            updatePlayerUI();
+                const evasiveBonus = (player.statusEffects.evasive && Number(player.statusEffects.evasive) > 0) ? 5 : 0;
+                const targetAC = Number(player.defense) + evasiveBonus;
 
-            if (Number(player.hp) <= 0) {
-                endCombat(false, player);
-            } else {
-                gameState.combat.playerTurn = true;
-                // Re-enable player combat buttons
-                elements.attackBtn.disabled = false;
-                elements.specialBtn.disabled = Number(player.powerSegments) < 3 || Number(player.mana) < 100;
-                elements.fleeBtn.disabled = false;
-                elements.actBtn.disabled = false;
-            }
+                if (isCriticalMiss) {
+                    message = `${enemy.name}'s attack critically misses!`;
+                    logClass = "log-good";
+                    elements.enemyCombatExpression.textContent = `(ಥ_ಥ)`;
+                    elements.playerCombatExpression.textContent = `(>▽<)`;
+                } else if (toHit >= targetAC) {
+                    damage = parseDamageDice(enemy.damageDice);
+                    if (isCriticalHit) {
+                        damage *= 2;
+                        message = `DEVASTATING BLOW! ${enemy.name} hits ${player.name}!`;
+                        logClass = "log-danger";
+                        elements.enemyCombatExpression.textContent = `(>▽<)`;
+                        elements.playerCombatExpression.textContent = `(X_X)`;
+                    } else {
+                        message = `${enemy.name} attacks ${player.name}.`;
+                        logClass = "log-bad";
+                        elements.enemyCombatExpression.textContent = `(⌐■_■)`;
+                        elements.playerCombatExpression.textContent = `(T_T)`;
+                    }
+
+                    if (damageReduction > 0) {
+                        const reducedAmount = Math.floor(damage * damageReduction);
+                        damage -= reducedAmount;
+                        message += ` You successfully dodged to reduce the damage by ${reducedAmount}!`;
+                        if (damage <= 0) {
+                            logClass = 'log-good';
+                            elements.playerCombatExpression.textContent = `(^_^;)`;
+                        }
+                    }
+
+                    damage = Math.max(0, damage);
+                    message += ` You take ${damage} damage.`;
+                    player.hp = Math.max(0, Number(player.hp) - damage);
+
+                } else {
+                    message = `${enemy.name}'s attack misses ${player.name}!`;
+                    logClass = "log-good";
+                    elements.enemyCombatExpression.textContent = `(¬_¬)`;
+                    elements.playerCombatExpression.textContent = `(^_^;)`;
+                }
+
+                addCombatLog(message, logClass, player);
+                updatePlayerUI();
+
+                if (Number(player.hp) <= 0) {
+                    endCombat(false, player);
+                } else {
+                    gameState.combat.playerTurn = true;
+                    elements.attackBtn.disabled = false;
+                    elements.specialBtn.disabled = Number(player.powerSegments) < 3 || Number(player.mana) < 100;
+                    elements.fleeBtn.disabled = false;
+                    elements.actBtn.disabled = false;
+                }
+            }, 750);
         }
 
         async function enemyTurnSequence(player) {
@@ -4151,6 +4244,17 @@
                     player.tempDefenseBoost = (player.tempDefenseBoost || 0) + item.effect.defense;
                     if (inCombat) player.statusEffects.defense_buff = Number(item.combatDuration || 1);
                 }
+                if (item.effect.buff) {
+                    applyBuff(player, item.effect.buff, { attack: item.effect.attack, defense: item.effect.defense, speed: item.effect.speed, duration: item.effect.duration });
+                }
+                if (item.effect.debuff && inCombat) {
+                    const enemy = gameState.combat.enemy;
+                    addCombatLog(`${player.name} uses the ${itemName} on ${enemy.name}!`, 'log-special', player);
+                    enemy.statusEffects[item.effect.debuff] = { duration: item.effect.duration };
+                } else if (item.effect.debuff && !inCombat) {
+                    addLogEntry("This item can only be used in combat.", "log-warning", player);
+                    return; // Don't consume the item
+                }
                 // Implement special artifact effects that can be "used"
                 if (item.isArtifact) {
                     if (item.effect.bombAttack && Number(player.mana) >= Number(item.effect.manaCost || 0)) { // Cherri's Bomb Fragment
@@ -4397,22 +4501,34 @@
 
             const teamName = gameState.poker.isDoubles ? `${player.name} & ${gameState.poker.partner.name}` : player.name;
 
-            if (playerTotal > opponentRoll) {
-                gameState.poker.wins = Number(gameState.poker.wins) + 1;
-                roundElement.classList.add("won");
-                addPokerLog(`Round ${gameState.poker.rounds}: ${teamName} win (${playerTotal} vs ${opponentRoll})`, "log-good", player);
-            } else if (playerTotal < opponentRoll) {
-                roundElement.classList.add("lost");
-                addPokerLog(`Round ${gameState.poker.rounds}: ${teamName} lose (${playerTotal} vs ${opponentRoll})`, "log-bad", player);
-            } else {
-                addPokerLog(`Round ${gameState.poker.rounds}: Tie (${playerTotal} vs ${opponentRoll})`, "log-neutral", player);
-            }
+            // Set initial expressions
+            elements.pokerPlayerExpression.textContent = playerRoll < 7 ? `(o_O)` : `(⌐■_■)`;
+            elements.pokerOpponentExpression.textContent = opponentRoll < 7 ? `(o_O)` : `(⌐■_■)`;
 
-            if (Number(gameState.poker.rounds) >= 5) {
-                endPokerGame(true, player);
-            } else if (player.isAI) {
-                setTimeout(() => pokerRoll(player), gameState.timer.aiDelay);
-            }
+            setTimeout(() => {
+                if (playerTotal > opponentRoll) {
+                    gameState.poker.wins = Number(gameState.poker.wins) + 1;
+                    roundElement.classList.add("won");
+                    addPokerLog(`Round ${gameState.poker.rounds}: ${teamName} win (${playerTotal} vs ${opponentRoll})`, "log-good", player);
+                    elements.pokerPlayerExpression.textContent = `(>▽<)`;
+                    elements.pokerOpponentExpression.textContent = `(T_T)`;
+                } else if (playerTotal < opponentRoll) {
+                    roundElement.classList.add("lost");
+                    addPokerLog(`Round ${gameState.poker.rounds}: ${teamName} lose (${playerTotal} vs ${opponentRoll})`, "log-bad", player);
+                    elements.pokerPlayerExpression.textContent = `(ಥ_ಥ)`;
+                    elements.pokerOpponentExpression.textContent = `(>▽<)`;
+                } else {
+                    addPokerLog(`Round ${gameState.poker.rounds}: Tie (${playerTotal} vs ${opponentRoll})`, "log-neutral", player);
+                    elements.pokerPlayerExpression.textContent = `(-_-)`;
+                    elements.pokerOpponentExpression.textContent = `(-_-)`;
+                }
+
+                if (Number(gameState.poker.rounds) >= 5) {
+                    endPokerGame(true, player);
+                } else if (player.isAI) {
+                    setTimeout(() => pokerRoll(player), gameState.timer.aiDelay);
+                }
+            }, 750);
         }
 
         function leavePoker(player) {
@@ -4558,6 +4674,13 @@
             // Lucifer appears 1 month (approx 30 days/turns) AFTER the second extermination has ended.
             // Extermination 1 is at 30 turns. Extermination 2 is at 30 + 30 = 60 turns.
             // Ex2 duration is 5 turns. So, it ends at turn 65.
+
+            // Complete the main quest if the player has it
+            const mainQuest = player.quests.find(q => q.id === 'main_find_hotel');
+            if (mainQuest) {
+                mainQuest.currentCount = 1; // Mark as complete
+                completeQuest(player, mainQuest);
+            }
             // 1 month after turn 65 is turn 95.
             if (Number(gameState.turn) >= (2 * EXTERMINATION_INTERVAL + EXTERMINATION_DURATION + 30) ) { //
                 const lucifer = gameState.overlords.find(ov => ov.type === 'lucifer');
@@ -4796,7 +4919,14 @@
             }
             if (character.type === "husk") { options.push({ text: `Challenge to Poker`, type: "challenge_poker", cost: 0 }); }
             if (character.type === "angel") { options.push({ text: `"Got any 'favors' for sale?" (Ask for unique item)`, type: "angel_favors", cost: 0 }); }
-            if (character.type === "alastor") { options.push({ text: `"Are you truly as powerful as they say?" (Praise for Prestige)`, type: "alastor_praise", cost: 0 }); }
+            if (character.type === "alastor" && !player.quests.some(q => q.id === 'alastor_sow_chaos')) {
+                options.push({ text: `(Quest) "You look bored."`, type: "quest_alastor_chaos", cost: 0 });
+            } else {
+                options.push({ text: `"Are you truly as powerful as they say?" (Praise for Prestige)`, type: "alastor_praise", cost: 0 });
+            }
+            if (character.type === "charlie" && !player.quests.some(q => q.id === 'charlie_help_sinner')) {
+                options.push({ text: `(Quest) "Is there any way I can help the hotel?"`, type: "quest_charlie_help", cost: 0 });
+            }
             if (character.type === "valentino") { options.push({ text: `"I'm interested in your 'business opportunities'." (Gain Money)`, type: "valentino_business", cost: 0 }); }
             if (character.type === "velvette" && Number(player.level) >= 5) { options.push({ text: `"Can I buy any new Hellish fashion?" (Item Exchange)`, type: "velvette_fashion", cost: 200 }); }
             if (character.type === "pentious") {
@@ -4909,6 +5039,14 @@
         function handleInteractionOutcome(success, character, player, optionType, roll) {
             if (success) {
                 switch (optionType) {
+                    case "quest_alastor_chaos":
+                        addInteractionLog(`Alastor's grin widens. "Entertainment! A wonderful idea! Go on, stir up some lovely, lovely chaos. Two fights should be a good start!"`, "log-special", player);
+                        grantQuest(player, 'alastor_sow_chaos');
+                        break;
+                    case "quest_charlie_help":
+                        addInteractionLog(`Charlie beams. "Really? That's wonderful! If you could just show some kindness to a couple of other souls, it would mean so much!"`, "log-special", player);
+                        grantQuest(player, 'charlie_help_sinner');
+                        break;
                     case "train_attack":
                         addInteractionLog(`Krunk grunts. "Fine. We start now. Don't be lazy."`, "log-neutral", player);
                         player.isTraining = { type: 'attack', duration: 3 };
