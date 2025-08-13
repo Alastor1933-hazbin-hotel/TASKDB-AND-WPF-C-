@@ -39,10 +39,6 @@
         body {
             background-color: var(--hell-secondary);
             color: var(--hell-text);
-            background-image: url('https://static1.cbrimages.com/wordpress/wp-content/uploads/2024/02/vaggie-leads-the-hotel-guests-to-war-in-hazbin-hotel.jpg?q=50&fit=crop&w=825&dpr=1.5');
-            background-size: cover;
-            background-attachment: fixed;
-            background-position: center;
             line-height: 1.6;
         }
 
@@ -946,7 +942,10 @@
         }
 
         .shake {
-            animation: shake 0.5s;
+            animation: shake 1s cubic-bezier(.36,.07,.19,.97) both;
+            transform: translate3d(0, 0, 0);
+            backface-visibility: hidden;
+            perspective: 1000px;
         }
 
         @keyframes flash {
@@ -1246,6 +1245,9 @@
                     <option value="train">Train Your Abilities</option>
                     <option value="interact">Interact with Characters</option>
                     <option value="rest">Rest & Recuperate</option>
+                    <option value="search_artifacts">Search for Artifacts</option>
+                    <option value="craft">Craft Items</option>
+                    <option value="doubles_poker" disabled>Play Doubles Poker</option>
                     <option value="player_interact" disabled>Interact with Player on Tile</option>
                 </select>
                 <div class="action-description" id="action-description">
@@ -1403,7 +1405,7 @@
                 specialPowerId: "wretched_fear",
                 combatManeuver: { name: "Intimidating Roar", cost: 10, type: "mana", effect: (player, enemy, log) => {
                     log(`${player.name} unleashes an intimidating roar!`, "log-warning", player);
-                    const fearCheck = rollD12() + Number(player.fear);
+                    const fearCheck = (rollD6() + rollD6()) + Number(player.fear);
                     if (fearCheck > Number(enemy.fearResist)) {
                         enemy.statusEffects.frightened = 1; // 1 turn of frightened
                         log(`${enemy.name} is momentarily paralyzed by fear!`, "log-special", player);
@@ -1468,7 +1470,7 @@
                 let effectDuration = baseFearEffectTurns + tierEffectIncrease;
 
                 if (enemy) {
-                    const fearRoll = rollD12() + Number(player.fear);
+                    const fearRoll = (rollD6() + rollD6()) + Number(player.fear);
                     if (fearRoll > Number(enemy.fearResist)) {
                         enemy.statusEffects.frightened = effectDuration; // N turns of frightened
                         log(`${enemy.name} is paralyzed with fear for ${effectDuration} turns!`, "log-special", player);
@@ -2179,6 +2181,8 @@
                     quests: [],
                     curses: [],
                     itemData: {},
+                    unlockedCrafting: false,
+                    isTraining: null,
                     combatManeuver: playerClass.combatManeuver
                 };
                 gameState.players.push(player);
@@ -2217,6 +2221,8 @@
                     quests: [],
                     curses: [],
                     itemData: {},
+                    unlockedCrafting: false,
+                    isTraining: null,
                     combatManeuver: playerClass.combatManeuver
                 };
                 gameState.players.push(player);
@@ -2245,13 +2251,17 @@
 
             const player = gameState.activePlayer;
             const interactOption = elements.actionSelector.querySelector('option[value="player_interact"]');
+            const doublesPokerOption = elements.actionSelector.querySelector('option[value="doubles_poker"]');
+
             if (interactOption) {
                 const otherPlayersOnTile = gameState.players.filter(p =>
                     p.id !== player.id &&
                     p.position.x === player.position.x &&
                     p.position.y === player.position.y
                 );
-                interactOption.disabled = otherPlayersOnTile.length === 0;
+                const canPlayDoubles = otherPlayersOnTile.length > 0;
+                interactOption.disabled = !canPlayDoubles;
+                if(doublesPokerOption) doublesPokerOption.disabled = !canPlayDoubles;
             }
 
             updatePlayerUI();
@@ -2261,7 +2271,9 @@
 
             hideAllGameScreens();
 
-            if (gameState.activePlayer.isAI) {
+            if (gameState.exterminationActive) {
+                handleExterminationEncounter(gameState.activePlayer);
+            } else if (gameState.activePlayer.isAI) {
                 addLogEntry(`${gameState.activePlayer.name} (AI) is taking its turn...`, 'log-ai');
                 elements.endTurnBtn.disabled = true;
                 setTimeout(aiTurn, gameState.timer.aiDelay);
@@ -2274,6 +2286,33 @@
         function endTurn() {
             const player = gameState.activePlayer;
             player.actionsTaken = 0;
+
+            // Handle Training
+            if (player.isTraining) {
+                player.isTraining.duration--;
+                if (player.isTraining.duration <= 0) {
+                    addLogEntry(`You have completed your training with Krunk!`, "log-special", player);
+
+                    // Remove the temporary buff first to avoid incorrect math
+                    if (player.statusEffects['GymBuff']) {
+                        if (player.statusEffects['GymBuff'].attack) player.attack -= player.statusEffects['GymBuff'].attack;
+                        if (player.statusEffects['GymBuff'].defense) player.defense -= player.statusEffects['GymBuff'].defense;
+                        delete player.statusEffects['GymBuff'];
+                    }
+
+                    // Now apply the permanent increase
+                    if (player.isTraining.type === 'attack') {
+                        player.attack += 2; // Permanent +2 bonus
+                        addLogEntry("Your Attack has permanently increased by 2!", "log-good", player);
+                    } else { // defense
+                        player.defense += 2; // Permanent +2 bonus
+                        addLogEntry("Your Defense has permanently increased by 2!", "log-good", player);
+                    }
+                    player.isTraining = null; // End training
+                } else {
+                    addLogEntry(`You continue your training. ${player.isTraining.duration} turns remaining.`, "log-neutral", player);
+                }
+            }
 
             // Handle Pentious weapon quest
             if (gameState.pentiousWeaponQuest.active && gameState.pentiousWeaponQuest.player === player.id) {
@@ -2580,12 +2619,15 @@
         function rollD20() { return rollD(20); }
 
         function rollDice(callback, player = gameState.activePlayer) {
-            playSound(elements.diceSound); elements.dice.classList.add("shake");
+            playSound(elements.diceSound);
+            elements.dice.classList.add("shake");
             setTimeout(() => {
                 elements.dice.classList.remove("shake");
-                const roll = rollD12();
-                elements.dice.textContent = roll;
-                if (callback) callback(roll);
+                const roll1 = rollD6();
+                const roll2 = rollD6();
+                const totalRoll = roll1 + roll2;
+                elements.dice.textContent = `${totalRoll} [${roll1}+${roll2}]`;
+                if (callback) callback(totalRoll);
             }, 1000);
         }
 
@@ -2773,6 +2815,28 @@
                     elements.actionButton1.disabled = false;
                     elements.actionButton2.disabled = false;
                     break;
+                case "doubles_poker":
+                    elements.actionDescription.textContent = "Team up with a player on the same tile to play poker against an opponent. The highest roll from your team is used.";
+                    elements.actionButton1.textContent = "Play Doubles Poker";
+                    elements.actionButton2.disabled = true;
+                    break;
+                case "search_artifacts":
+                    elements.actionDescription.textContent = "Search the area for powerful and rare artifacts. A high roll is needed to find anything of value, but the rewards can be immense. Failure might attract unwanted attention.";
+                    elements.actionButton1.textContent = "Search for Artifacts";
+                    elements.actionButton2.disabled = true;
+                    break;
+                case "craft":
+                    elements.actionDescription.textContent = "Use your knowledge to craft items. You must first learn recipes from characters like Sir Pentious.";
+                    elements.actionButton1.textContent = "Open Crafting";
+                    elements.actionButton1.disabled = !player.unlockedCrafting; // This will be a new player property
+                    elements.actionButton2.disabled = true;
+                    break;
+                case "face_extermination":
+                    elements.actionDescription.textContent = "The air crackles with holy energy. You must face what's coming. Roll the dice to determine your fate.";
+                    elements.actionButton1.textContent = "Face Your Fate";
+                    elements.actionButton1.disabled = false;
+                    elements.actionButton2.disabled = true;
+                    break;
                 default:
                     elements.actionDescription.textContent = `Select an action (${Number(gameState.activePlayer.maxActions) - Number(gameState.activePlayer.actionsTaken)} remaining this turn)`;
                     elements.actionButton1.disabled = true; elements.actionButton2.disabled = true;
@@ -2801,11 +2865,149 @@
                 case "train": train(option === "option1" ? "offense" : "defense", player); break;
                 case "interact": startInteraction(player); break;
                 case "rest": restAndRecuperate(player); break;
+                case "search_artifacts": startArtifactSearch(player); break;
+                case "craft": startCrafting(player); break;
+                case "doubles_poker": startDoublesPoker(player); break;
                 case "player_interact": handlePlayerInteraction(option === "option1" ? "help" : "fight", player); break;
+                case "face_extermination":
+                    rollDice((roll) => {
+                        if (roll === 12) {
+                            addLogEntry("You find a perfect hiding spot and avoid the angels... for now.", "log-good", player);
+                            endTurn();
+                        } else if (roll === 2) {
+                            const boss = Math.random() < 0.5 ? characterStats.adam : characterStats.lute;
+                            addLogEntry(`You've run into a commander of the Exorcists! It's ${boss.name}!`, "log-danger", player);
+                            startCombatWithSpecificEnemy(boss, player);
+                        } else {
+                            let angelCount = 1;
+                            if (roll <= 4) angelCount = 4;
+                            else if (roll <= 6) angelCount = 6;
+
+                            let challenge = 10 + (roll * 2);
+                            let hp = 150 + (roll * 20);
+                            let toHit = 8 + roll;
+                            let damageDice = `${Math.ceil(roll/2)}d8+${roll}`;
+
+                            if (roll === 7) { // Easter egg
+                               addLogEntry("A lone, formidable champion of the Exorcists stands before you!", "log-special", player);
+                               challenge = 20; hp = 500; toHit = 15; damageDice = "5d10+10";
+                            } else {
+                               addLogEntry(`An angelic patrol of ${angelCount} angels spots you!`, "log-bad", player);
+                            }
+
+                            const angelPatrol = { name: `Angel Patrol (x${angelCount})`, type: "Celestial", challenge: challenge, hp: hp, ac: 16, toHitBonus: toHit, damageDice: damageDice, abilities: {}, isGroup: true };
+                            startCombatWithSpecificEnemy(angelPatrol, player);
+                        }
+                    });
+                    elements.actionButton1.disabled = true;
+                    break;
             }
         }
 
         // --- QUEST SYSTEM LOGIC ---
+
+        function startArtifactSearch(player) {
+            addLogEntry(`${player.name} begins scouring the area for ancient relics...`, "log-neutral", player);
+            rollDice((roll) => {
+                if (roll < 8) {
+                    addLogEntry("Your search was fruitless. This area is picked clean.", "log-bad", player);
+                } else if (roll < 11) {
+                    const fakeOuts = [
+                        "You find a glint of metal, but it's just a worthless tin can.",
+                        "You uncover a hidden chest! It's... empty. Someone beat you to it.",
+                        "You follow an old map, but it leads to a collapsed ruin with nothing inside."
+                    ];
+                    addLogEntry(fakeOuts.randomElement(), "log-neutral", player);
+                } else {
+                    let potentialArtifacts = [];
+                    if (roll === 11) { // Blue or Purple
+                        potentialArtifacts = Object.values(items).filter(i => i.isArtifact && (i.rarity === 'blue' || i.rarity === 'purple'));
+                    } else { // Roll is 12 - Orange, Red, or Black
+                        potentialArtifacts = Object.values(items).filter(i => i.isArtifact && ['orange', 'red', 'black'].includes(i.rarity));
+                    }
+
+                    if (potentialArtifacts.length > 0) {
+                        if (player.inventory.length < player.inventoryCapacity) {
+                            const foundArtifact = potentialArtifacts.randomElement();
+                            player.inventory.push(foundArtifact.name);
+                            addLogEntry(`Miraculous! You've unearthed a powerful artifact: ${foundArtifact.name}!`, "log-special", player);
+                            updateGatherQuests(player);
+                        } else {
+                            addLogEntry("You found an artifact, but your inventory is full! It slips from your grasp...", "log-warning", player);
+                        }
+                    } else {
+                         addLogEntry("You felt a powerful energy, but it has since faded. Nothing remains.", "log-bad", player);
+                    }
+                }
+                updatePlayerUI();
+                completeAction(player);
+            }, player);
+        }
+
+        function startCrafting(player) {
+            if (!player.unlockedCrafting) {
+                addLogEntry("You must learn how to craft from an expert first.", "log-bad", player);
+                completeAction(player);
+                return;
+            }
+            addLogEntry("This action is not yet fully implemented.", "log-warning", player);
+            completeAction(player);
+        }
+
+        function startDoublesPoker(player) {
+            const partner = gameState.players.find(p => p.id !== player.id && p.position.x === player.position.x && p.position.y === player.position.y);
+
+            if (!partner) {
+                addLogEntry("You need another player on your tile to play Doubles Poker.", "log-bad", player);
+                completeAction(player);
+                return;
+            }
+
+            if (!confirm(`${player.name}, do you and ${partner.name} agree to play Doubles Poker?`)) {
+                addLogEntry("You decide not to play poker together.", "log-neutral", player);
+                completeAction(player);
+                return;
+            }
+
+            const pokerOpponents = [
+                { name: "Husk", skill: 5 + (Number(player.level) / 2), type: "husk", pokerTier: 1 },
+                { name: "Demon Dealer", skill: 7 + (Number(player.level) / 2), type: "generic", cowardice: 60 },
+                { name: "Angel Dust", skill: 6 + (Number(player.level) / 2), type: "angel", cowardice: 30 },
+            ];
+            const opponent = pokerOpponents.randomElement();
+            const bet = Math.min(Math.floor(player.money * 0.3), Math.floor(Math.random() * 500) + 200);
+
+            if (bet > player.money || bet > partner.money) {
+                addLogEntry("One of you doesn't have enough money for the bet!", "log-bad", player);
+                completeAction(player);
+                return;
+            }
+
+            gameState.poker = {
+                active: true,
+                opponent: opponent,
+                bet: bet,
+                rounds: 0,
+                wins: 0,
+                isDoubles: true,
+                partner: partner
+            };
+            elements.pokerScreen.style.display = "block";
+            elements.pokerOpponent.textContent = opponent.name;
+            elements.pokerBet.textContent = `${bet} (from each player)`;
+            elements.pokerMoney.textContent = `${player.name}: ${player.money}, ${partner.name}: ${partner.money}`;
+            elements.pokerRounds.querySelectorAll(".poker-round").forEach(round => round.className = "poker-round");
+            elements.pokerLog.innerHTML = "";
+            addPokerLog(`${player.name} and ${partner.name} team up to play poker against ${opponent.name}. Bet: ${bet} each.`, "log-neutral", player);
+
+            elements.pokerRollBtn.disabled = player.isAI;
+            elements.pokerLeaveBtn.disabled = player.isAI;
+            if (player.isAI) {
+                setTimeout(() => pokerRoll(player), gameState.timer.aiDelay);
+            }
+            completeAction(player);
+        }
+
         function grantQuest(player, questId) {
             if (!questDefinitions[questId]) {
                 console.error(`Quest with ID ${questId} not found.`);
@@ -3024,7 +3226,7 @@
                 return;
             }
 
-            const targetPlayer = otherPlayersOnTile[0];
+            const targetPlayer = otherPlayersOnTile[0]; // For now, just interact with the first one found
 
             if (type === "help") {
                 const hpToGive = Math.floor(player.hp * 0.1);
@@ -3039,8 +3241,9 @@
                 updatePlayerUI();
                 completeAction(player);
             } else { // fight
-                addLogEntry(`${player.name} attacks ${targetPlayer.name}!`, "log-danger", player);
+                addLogEntry(`${player.name} attacks ${targetPlayer.name}! A sinner-on-sinner skirmish breaks out!`, "log-danger", player);
 
+                // Simplified combat round
                 let attackRoll = rollD20();
                 let toHit = attackRoll + player.attack;
                 if (toHit >= targetPlayer.defense) {
@@ -3115,7 +3318,7 @@
                 { text: "You stumble into an acidic pool! It burns!", effect: () => { player.hp = Math.max(0, Number(player.hp) - (Math.floor(Math.random() * 15) + 10)); }, logClass: "log-danger" },
                 { text: "A territorial Imp clan ambushes you!", effect: () => startCombat("normal", player), logClass: "log-bad" },
                 { text: "A cunning demon tricks you and steals some money!", effect: () => {
-                    if (Number(player.persuasion) > rollD12()) {
+                    if (Number(player.persuasion) > (rollD6() + rollD6())) {
                         addLogEntry("...but you see through their deception and avoid the trap!", "log-good", player);
                     } else {
                         player.money = Math.max(0, Number(player.money) - (Math.floor(Math.random() * 50) + 20));
@@ -3158,6 +3361,10 @@
                     const friendlyDemons = gameState.overlords.filter(ov => ov.type !== "alastor" && ov.type !== "adam" && ov.type !== "lute" && ov.visible && (ov.type === "charlie" || ov.type === "vaggie" || ov.type === "angel" || ov.type === "husk" || ov.type === "niffty" || ov.type === "pentious" || ov.type === "cherribomb" || ov.type === "rosie" || ov.type === "camillacarmine"));
                     if(friendlyDemons.length > 0) { startInteraction(player, friendlyDemons.randomElement()); }
                     else { addLogEntry("You thought you saw someone, but they vanished into the smog.", "log-neutral", player);}
+                }, logClass: "log-special" },
+                { text: "You stumble upon a hidden, makeshift gym. A hulking demon eyes you.", effect: () => {
+                    const gymTrainer = { name: "Krunk, the Trainer", type: "trainer", stats: { persuasion: 15 }, disposition: "neutral" };
+                    startInteraction(player, gymTrainer);
                 }, logClass: "log-special" }
             ];
 
@@ -3296,6 +3503,25 @@
             completeAction(player);
         }
 
+        function startCombatWithSpecificEnemy(enemyProto, player) {
+            const enemy = { ...enemyProto, statusEffects: {}, recharge: {} };
+            enemy.hp = enemy.hp || 100;
+            enemy.maxHp = enemy.hp;
+
+            gameState.combat = { active: true, enemy: enemy, rounds: 0, playerTurn: true };
+            elements.combatScreen.style.display = "block";
+            updateCombatUI(player);
+            elements.combatLog.innerHTML = "";
+            addCombatLog(`A ${enemy.name} appears before ${player.name}!`, "log-neutral", player);
+            if (enemy.type === "Celestial") { addCombatLog(`The ${enemy.name}'s holy aura burns your demonic flesh. 'Time for your extermination, sinner!'`, "log-bad", player); }
+            else { addCombatLog(`The ${enemy.name} snarls and prepares to attack.`, "log-neutral", player); }
+
+            elements.attackBtn.disabled = player.isAI;
+            elements.specialBtn.disabled = player.isAI || Number(player.powerSegments) < 3 || Number(player.mana) < 100;
+            elements.fleeBtn.disabled = player.isAI;
+            elements.actBtn.disabled = player.isAI;
+        }
+
         function updateCombatUI(player) {
             const enemy = gameState.combat.enemy;
             elements.playerCombatName.textContent = player.name;
@@ -3388,7 +3614,7 @@
                         }
                     }
 
-                    if (Number(attackRoll) <= 5 && Number(rollD12()) > (Number(attackRoll) + 1)) {
+                    if (Number(attackRoll) <= 5 && (rollD6() + rollD6()) > (Number(attackRoll) + 1)) {
                         const reflectedDamage = Math.floor(damage * 0.5);
                         player.hp = Math.max(0, Number(player.hp) - reflectedDamage);
                         addCombatLog(`${player.name}'s attack is parried and reflects back, dealing ${reflectedDamage} damage!`, "log-danger", player);
@@ -3478,7 +3704,7 @@
                 message += ` You take ${damage} damage.`;
                 player.hp = Math.max(0, Number(player.hp) - damage);
 
-                if (Number(attackRoll) <= 5 && Number(rollD12()) > (Number(attackRoll) + 1)) {
+                if (Number(attackRoll) <= 5 && (rollD6() + rollD6()) > (Number(attackRoll) + 1)) {
                     const reflectedDamage = Math.floor(damage * 0.5);
                     enemy.hp = Math.max(0, Number(enemy.hp) - reflectedDamage);
                     addCombatLog(`${enemy.name}'s attack is clumsy and damages itself for ${reflectedDamage}!`, "log-neutral", player);
@@ -3632,31 +3858,41 @@
             const effect = enemy.abilities.specialEffect;
             switch (effect) {
                 case "grapple":
-                    const grappleCheck = rollD12() + Number(enemy.toHitBonus);
+                    const grappleCheck = (rollD6() + rollD6()) + Number(enemy.toHitBonus);
                     if (grappleCheck > (Number(player.defense) + Math.floor(Number(player.speed) / 2))) {
                         player.statusEffects.grappled = 1;
                         logFunc(`${player.name} is grappled and cannot flee or use maneuvers next turn!`, "log-danger", player);
-                    } else { logFunc(`Grapple attempt failed.`, "log-neutral", player); }
+                    } else {
+                        logFunc(`Grapple attempt failed.`, "log-neutral", player);
+                    }
                     break;
                 case "incapacitate":
-                    const incapacitateSave = rollD12() + Number(player.defense);
+                    const incapacitateSave = (rollD6() + rollD6()) + Number(player.defense);
                     if (incapacitateSave < (Number(enemy.toHitBonus) + 5)) {
-                        player.statusEffects.incapacitated = 1; logFunc(`${player.name} is incapacitated!`, "log-danger", player); }
-                    else { logFunc(`Incapacitate attempt failed.`, "log-neutral", player); }
+                        player.statusEffects.incapacitated = 1;
+                        logFunc(`${player.name} is incapacitated!`, "log-danger", player);
+                    } else {
+                        logFunc(`Incapacitate attempt failed.`, "log-neutral", player);
+                    }
                     break;
                 case "poison_charm":
-                    const poisonCharmSave = rollD12() + Number(player.defense);
+                    const poisonCharmSave = (rollD6() + rollD6()) + Number(player.defense);
                     if (poisonCharmSave < (Number(enemy.toHitBonus) + 5)) {
-                        player.statusEffects.poisoned = 1; player.statusEffects.charmed = 1;
-                        logFunc(`${player.name} is poisoned and charmed, potentially attacking allies or acting erratically!`, "log-danger", player);
-                    } else { logFunc(`Poison/Charm attempt failed.`, "log-neutral", player); }
+                        player.statusEffects.poisoned = 1;
+                        player.statusEffects.charmed = 1;
+                        logFunc(`${player.name} is poisoned and charmed, possibly attacking allies or acting erratically!`, "log-danger", player);
+                    } else {
+                        logFunc(`Poison/Charm attempt failed.`, "log-neutral", player);
+                    }
                     break;
-                case "fire_aoe": case "fire_cone":
+                case "fire_aoe":
+                case "fire_cone":
                     const damage = parseDamageDice(enemy.damageDice || "4d8");
                     player.hp = Math.max(0, Number(player.hp) - damage);
                     logFunc(`${enemy.name} unleashes a fiery AoE, dealing ${damage} damage!`, "log-danger", player);
                     break;
-                case "radiant_burst": case "radiant":
+                case "radiant_burst":
+                case "radiant":
                     const rDamage = parseDamageDice(enemy.damageDice || "5d8");
                     player.hp = Math.max(0, Number(player.hp) - rDamage);
                     logFunc(`${enemy.name} unleashes a radiant burst, dealing ${rDamage} damage!`, "log-danger", player);
@@ -3669,11 +3905,13 @@
                     logFunc(`${enemy.name} siphons ${manaDrained} mana from ${player.name}, healing ${hpGained} HP!`, "log-special", player);
                     break;
                 case "confusion_debuff": // The Nightmare Weaver special
-                    const confusionSave = rollD12() + Number(player.persuasion);
+                    const confusionSave = (rollD6() + rollD6()) + Number(player.persuasion);
                     if (confusionSave < (Number(enemy.toHitBonus) + 5)) {
                         player.statusEffects.confused = 1;
-                        logFunc(`${enemy.name} weaves nightmares, confusing ${player.name}! (Disadvantage on next action)`, "log-danger", player);
-                    } else { logFunc(`${player.name} resists the confusion!`, "log-neutral", player); }
+                        logFunc(`${player.name} weaves nightmares, confusing ${player.name}! (Disadvantage on next action)`, "log-danger", player);
+                    } else {
+                        logFunc(`${player.name} resists the confusion!`, "log-neutral", player);
+                    }
                     break;
                 case "random_potion": // Velvette special
                     const potionTypes = ["Health Potion", "Mana Potion", "Elixir of Strength", "Elixir of Fortitude"];
@@ -3693,24 +3931,29 @@
                     logFunc(`${enemy.name} lets out a fiery burst, dealing ${burstDamage} damage!`, "log-danger", player);
                     break;
                 case "fear_debuff": // Tormented Soul
-                    const fearDebuffSave = rollD12() + Number(player.fear);
+                    const fearDebuffSave = (rollD6() + rollD6()) + Number(player.fear);
                     if (fearDebuffSave < (Number(enemy.toHitBonus) + 5)) {
                         player.statusEffects.frightened = 1;
                         logFunc(`${player.name} is filled with despair and frightened!`, "log-danger", player);
-                    } else { logFunc(`${player.name} resists the despair.`, "log-neutral", player); }
+                    } else {
+                        logFunc(`${player.name} resists the despair.`, "log-neutral", player);
+                    }
                     break;
-                 case "charm": // Rosie special
-                    const charmSave = rollD12() + Number(player.persuasion);
+                case "charm": // Rosie special
+                    const charmSave = (rollD6() + rollD6()) + Number(player.persuasion);
                     if (charmSave < (Number(enemy.toHitBonus) + 5)) {
                         player.statusEffects.charmed = 1;
                         logFunc(`${enemy.name}'s charm beguiles ${player.name}, possibly causing them to lose a turn or attack allies!`, "log-special", player);
-                    } else { logFunc(`${player.name} resists the charm!`, "log-neutral", player); }
+                    } else {
+                        logFunc(`${player.name} resists the charm!`, "log-neutral", player);
+                    }
                     break;
                 case "debuff_all": // Zestial special
-                    const debuffSave = rollD12() + Number(player.level);
+                    const debuffSave = (rollD6() + rollD6()) + Number(player.level);
                     if (debuffSave < (Number(enemy.toHitBonus) + 5)) {
                         player.statusEffects.weakened = 1;
-                        player.attack = Math.max(1, Number(player.attack) - 3); player.tempAttackBoost = (player.tempAttackBoost || 0) - 3;
+                        player.attack = Math.max(1, Number(player.attack) - 3);
+                        player.tempAttackBoost = (player.tempAttackBoost || 0) - 3;
                         player.defense = Math.max(1, Number(player.defense) - 2); player.tempDefenseBoost = (player.tempDefenseBoost || 0) - 2;
                         logFunc(`${enemy.name}'s ancient hex weakens ${player.name}! (-3 Attack, -2 Defense)`, "log-danger", player);
                     } else { logFunc(`${player.name} shrugs off the ancient hex.`, "log-neutral", player); }
@@ -3753,7 +3996,7 @@
                 const playerSpeed = Number(player.speed);
 
                 const playerTotal = Number(roll) + Math.floor(playerSpeed / 3);
-                const enemyTotal = rollD12() + Math.floor(enemySpeed / 5);
+                const enemyTotal = (rollD6() + rollD6()) + Math.floor(enemySpeed / 5);
 
                 if (playerTotal > enemyTotal || Number(roll) >= 10) {
                     addCombatLog(`${player.name} successfully flees from ${gameState.combat.enemy.name}!`, "log-good", player);
@@ -4124,32 +4367,52 @@
         function pokerRoll(player) {
             if (!gameState.poker.active) return;
 
+            const isDoubles = gameState.poker.isDoubles;
+            const partner = gameState.poker.partner;
+
             let playerPokerSkill = Number(player.pokerSkill) || 0;
-            if (player.inventory.includes("Husk's Lucky Die")) {
+            if (player.inventory.includes("Husk's Lucky Die") || (isDoubles && partner.inventory.includes("Husk's Lucky Die"))) {
                 playerPokerSkill += 3;
             }
 
-            rollDice((roll) => {
-                gameState.poker.rounds = Number(gameState.poker.rounds) + 1;
-                const playerTotal = Number(roll) + playerPokerSkill;
-                const opponentRoll = rollD12() + Math.floor(Number(gameState.poker.opponent.skill));
-                const roundElement = elements.pokerRounds.children[Number(gameState.poker.rounds) - 1];
-                roundElement.classList.add("active");
-
-                if (playerTotal > opponentRoll) {
-                    gameState.poker.wins = Number(gameState.poker.wins) + 1;
-                    roundElement.classList.add("won");
-                    addPokerLog(`Round ${gameState.poker.rounds}: ${player.name} wins (${playerTotal} vs ${opponentRoll})`, "log-good", player);
-                } else if (playerTotal < opponentRoll) {
-                    roundElement.classList.add("lost");
-                    addPokerLog(`Round ${gameState.poker.rounds}: ${player.name} loses (${playerTotal} vs ${opponentRoll})`, "log-bad", player);
+            rollDice((roll1) => {
+                if (isDoubles) {
+                    rollDice((roll2) => {
+                        const bestRoll = Math.max(roll1, roll2);
+                        addPokerLog(`${player.name} rolled a ${roll1}, and ${partner.name} rolled a ${roll2}. Using the best roll: ${bestRoll}.`, `log-player${gameState.players.indexOf(player)}`);
+                        resolvePokerRound(bestRoll, player, playerPokerSkill);
+                    }, partner);
                 } else {
-                    addPokerLog(`Round ${gameState.poker.rounds}: Tie (${playerTotal} vs ${opponentRoll})`, "log-neutral", player);
+                    resolvePokerRound(roll1, player, playerPokerSkill);
                 }
-
-                if (Number(gameState.poker.rounds) >= 5) { endPokerGame(true, player); }
-                else if (player.isAI) { setTimeout(() => pokerRoll(player), gameState.timer.aiDelay); }
             }, player);
+        }
+
+        function resolvePokerRound(playerRoll, player, playerPokerSkill) {
+            gameState.poker.rounds = Number(gameState.poker.rounds) + 1;
+            const playerTotal = Number(playerRoll) + playerPokerSkill;
+            const opponentRoll = (rollD6() + rollD6()) + Math.floor(Number(gameState.poker.opponent.skill));
+            const roundElement = elements.pokerRounds.children[Number(gameState.poker.rounds) - 1];
+            roundElement.classList.add("active");
+
+            const teamName = gameState.poker.isDoubles ? `${player.name} & ${gameState.poker.partner.name}` : player.name;
+
+            if (playerTotal > opponentRoll) {
+                gameState.poker.wins = Number(gameState.poker.wins) + 1;
+                roundElement.classList.add("won");
+                addPokerLog(`Round ${gameState.poker.rounds}: ${teamName} win (${playerTotal} vs ${opponentRoll})`, "log-good", player);
+            } else if (playerTotal < opponentRoll) {
+                roundElement.classList.add("lost");
+                addPokerLog(`Round ${gameState.poker.rounds}: ${teamName} lose (${playerTotal} vs ${opponentRoll})`, "log-bad", player);
+            } else {
+                addPokerLog(`Round ${gameState.poker.rounds}: Tie (${playerTotal} vs ${opponentRoll})`, "log-neutral", player);
+            }
+
+            if (Number(gameState.poker.rounds) >= 5) {
+                endPokerGame(true, player);
+            } else if (player.isAI) {
+                setTimeout(() => pokerRoll(player), gameState.timer.aiDelay);
+            }
         }
 
         function leavePoker(player) {
@@ -4160,77 +4423,66 @@
 
         function endPokerGame(completed = true, player) {
             if (!gameState.poker.active) return;
-            const pokerOpponent = gameState.poker.opponent;
+            const { opponent, bet, wins, isDoubles, partner } = gameState.poker;
+            const teamName = isDoubles ? `${player.name} & ${partner.name}` : player.name;
             gameState.poker.active = false;
 
             if (completed) {
-                if (Number(gameState.poker.wins) >= 3) {
-                    addPokerLog(`${player.name} wins the poker game ${gameState.poker.wins}-${5 - Number(gameState.poker.wins)}!`, "log-good", player);
+                if (wins >= 3) {
+                    addPokerLog(`${teamName} win the poker game ${wins}-${5 - wins}!`, "log-good", player);
 
-                    if (pokerOpponent.type === "husk" && Number(gameState.poker.bet) === 0) {
-                        if (!gameState.playerPokerBuffs[player.id]) gameState.playerPokerBuffs[player.id] = {};
-                        if (!gameState.playerPokerBuffs[player.id].huskPokerTier) {
-                            player.pokerSkill = Math.min(10, Number(player.pokerSkill) + 5);
-                            gameState.playerPokerBuffs[player.id].huskPokerTier = 1;
-                            addPokerLog(`${player.name} learned some poker skills from Husk! (Poker Skill: +5)`, "log-special", player);
-                        } else if (Number(gameState.playerPokerBuffs[player.id].huskPokerTier) === 1) {
-                             player.pokerSkill = Math.min(10, Number(player.pokerSkill) + 3);
-                            gameState.playerPokerBuffs[player.id].huskPokerTier = 2;
-                            addPokerLog(`${player.name} learned more advanced poker skills from Husk! (Poker Skill: +3)`, "log-special", player);
-                        } else if (Number(gameState.playerPokerBuffs[player.id].huskPokerTier) === 2) {
-                             player.pokerSkill = Math.min(10, Number(player.pokerSkill) + 2);
-                            gameState.playerPokerBuffs[player.id].huskPokerTier = 3;
-                            addPokerLog(`${player.name} mastered poker from Husk! (Poker Skill: +2)`, "log-special", player);
-                        } else {
-                            addPokerLog(`${player.name} gained no more poker skills from Husk.`, "log-neutral", player);
-                        }
-                    } else if (pokerOpponent.type === "generic" || pokerOpponent.type === "angel" || pokerOpponent.type === "cherribomb") { // Other opponents provide gambling skill too
-                         player.pokerSkill = Math.min(10, Number(player.pokerSkill) + 3);
-                         addPokerLog(`${player.name} gained some general gambling insights! (Poker Skill: +3)`, "log-good", player);
-                         // If Angel Dust, might get Strange Dust
-                         if (pokerOpponent.type === "angel" && player.inventory.length < Number(player.inventoryCapacity) && Math.random() < 0.5) {
-                             player.inventory.push("Strange Dust");
-                             addLogEntry(`${player.name} wins a Strange Dust from Angel Dust!`, "log-good", player);
-                         }
-                    } else { // Normal win means gaining money
-                        player.money = Number(player.money) + Number(gameState.poker.bet);
-                        addPokerLog(`${player.name} wins ${gameState.poker.bet} money!`, "log-good", player);
+                    if (isDoubles) {
+                        player.money += bet;
+                        partner.money += bet;
+                        addPokerLog(`${player.name} and ${partner.name} each win ${bet} money!`, "log-good", player);
+                    } else {
+                         // Non-doubles winning logic remains here
+                         player.money += bet;
+                         addPokerLog(`${player.name} wins ${bet} money!`, "log-good", player);
                     }
-                } else { // Player loses
-                    player.money = Number(player.money) - Number(gameState.poker.bet);
-                    addPokerLog(`${player.name} loses ${gameState.poker.bet} money.`, "log-bad", player);
-                    if (Number(player.money) < 0) {
-                        const enslavementRoll = rollD12();
-                        // Cannot enslave if opponent is Husk (Alastor's slave) or other major Overlords or already-a-slave characters
-                        const targetOverlord = gameState.overlords.find(ov => ov.name === pokerOpponent.name);
-                        const isPokerOpponentMaster = targetOverlord ? (Number(targetOverlord.stats.challenge) >= 15 || targetOverlord.type === "husk") : false; // Only Husk or high-challenge overlords cannot be taken
-                        const isAlreadySlaveOfMaster = targetOverlord ? targetOverlord.isSlaveOfMaster : false; // Generic imp cannot be already slave
 
-                        if (!isPokerOpponentMaster && !isAlreadySlaveOfMaster && Number(enslavementRoll) > Number(pokerOpponent.cowardice)) { // Low cowardice helps capture after loss
-                             if (Number(player.slaves.length) < Number(player.slaveCapacity)) {
-                                 const captured = {
-                                     name: `Captured ${pokerOpponent.name}`,
-                                     hp: Math.floor(Number(pokerOpponent.skill) * 10),
-                                     attack: Math.floor(Number(pokerOpponent.skill) * 0.7),
-                                     type: pokerOpponent.type
-                                 };
-                                 player.slaves.push(captured);
-                                 addPokerLog(`${pokerOpponent.name} can't pay their debt and becomes ${player.name}'s slave!`, "log-special", player);
-                             } else {
-                                addPokerLog(`${pokerOpponent.name} can't pay their debt but your slave capacity is full. They manage to escape.`, "log-warning", player);
-                                player.money = 0;
-                             }
+                    if (opponent.type === "husk" && bet === 0) {
+                        const playersToBuff = isDoubles ? [player, partner] : [player];
+                        playersToBuff.forEach(p => {
+                            if (!gameState.playerPokerBuffs[p.id]) gameState.playerPokerBuffs[p.id] = {};
+                            if (!gameState.playerPokerBuffs[p.id].huskPokerTier) {
+                                p.pokerSkill = Math.min(10, Number(p.pokerSkill) + 5);
+                                gameState.playerPokerBuffs[p.id].huskPokerTier = 1;
+                                addPokerLog(`${p.name} learned some poker skills from Husk! (Poker Skill: +5)`, "log-special", p);
+                            }
+                        });
+                    }
+                } else { // Team loses
+                    addPokerLog(`${teamName} lose the poker game.`, "log-bad", player);
+                    if (isDoubles) {
+                        player.money -= bet;
+                        partner.money -= bet;
+                        addPokerLog(`${player.name} and ${partner.name} each lose ${bet} money.`, "log-bad", player);
+                    } else {
+                        player.money -= bet;
+                        addPokerLog(`${player.name} loses ${bet} money.`, "log-bad", player);
+                    }
+
+                    // Handle debt/enslavement for the active player if they go negative
+                    if (player.money < 0) {
+                        const enslavementRoll = (rollD6() + rollD6());
+                        const targetOverlord = gameState.overlords.find(ov => ov.name === opponent.name);
+                        const isMaster = targetOverlord ? (Number(targetOverlord.stats.challenge) >= 15 || targetOverlord.type === "husk") : false;
+                        if (!isMaster && enslavementRoll > opponent.cowardice) {
+                             addPokerLog(`${opponent.name} can't pay their debt and becomes ${player.name}'s slave!`, "log-special", player);
                         } else {
-                            addPokerLog(`${pokerOpponent.name} can't pay their debt but manages to escape enslavement.`, "log-neutral", player);
-                            player.money = 0;
+                            addPokerLog(`${opponent.name} can't pay their debt but manages to escape enslavement.`, "log-neutral", player);
                         }
+                        player.money = 0;
                     }
                 }
             }
             updatePlayerUI();
             setTimeout(() => {
                 elements.pokerScreen.style.display = "none";
-                if (player.isAI) { aiTurn(); }
+                if (player.isAI) {
+                    aiTurn();
+                }
             }, 2000);
         }
 
@@ -4256,9 +4508,9 @@
                     addSearchLog(`${player.name}'s careful search provides steady progress.`, "log-good", player);
                 }
                 gameState.search.progress = Number(gameState.search.progress) + progressGained;
-                elements.searchProgress.style.width = `${Math.min(100, Number(gameState.search.progress))}%`;
+                elements.searchProgress.style.width = `${Math.min(100, (Number(gameState.search.progress) / 300) * 100)}%`;
 
-                if (Number(gameState.search.progress) >= 100) { foundHazbinHotel(player); return; }
+                if (Number(gameState.search.progress) >= 300) { foundHazbinHotel(player); return; }
 
                 const searchEvents = [
                     { min: 1, max: 5, prob: 0.3, text: `${player.name} finds nothing but empty streets and wailing souls.`, class: "log-bad" },
@@ -4513,7 +4765,16 @@
 
             const options = [];
 
-            options.push({ text: `Friendly Chat (Persuasion)`, type: "friendly_chat", cost: 0 });
+            if (character.type === "trainer") {
+                if (!player.isTraining) {
+                    options.push({ text: `Train Attack (3 turns, 300 Money)`, type: "train_attack", cost: 300 });
+                    options.push({ text: `Train Defense (3 turns, 300 Money)`, type: "train_defense", cost: 300 });
+                } else {
+                    options.push({ text: `(Already Training)`, type: "leave", cost: 0, disabled: true });
+                }
+                options.push({ text: `Leave`, type: "leave", cost: 0 });
+            } else {
+                options.push({ text: `Friendly Chat (Persuasion)`, type: "friendly_chat", cost: 0 });
             options.push({ text: `Intimidate (Fear)`, type: "intimidate_chat", cost: 0 });
 
             if (Number(currentRelations) >= 0) {
@@ -4538,7 +4799,14 @@
             if (character.type === "alastor") { options.push({ text: `"Are you truly as powerful as they say?" (Praise for Prestige)`, type: "alastor_praise", cost: 0 }); }
             if (character.type === "valentino") { options.push({ text: `"I'm interested in your 'business opportunities'." (Gain Money)`, type: "valentino_business", cost: 0 }); }
             if (character.type === "velvette" && Number(player.level) >= 5) { options.push({ text: `"Can I buy any new Hellish fashion?" (Item Exchange)`, type: "velvette_fashion", cost: 200 }); }
-            if (character.type === "pentious" && !gameState.pentiousWeaponQuest.active && Number(player.money) >= 80000 && Number(player.inventory.length) < Number(player.inventoryCapacity)) { options.push({ text: `Commission Angel-Bladed Pistol (80,000 Money, 18 Turns)`, type: "pentious_commission", cost: 80000 }); }
+            if (character.type === "pentious") {
+                if (!gameState.pentiousWeaponQuest.active && Number(player.money) >= 80000 && Number(player.inventory.length) < Number(player.inventoryCapacity)) {
+                    options.push({ text: `Commission Angel-Bladed Pistol (80,000 Money, 18 Turns)`, type: "pentious_commission", cost: 80000 });
+                }
+                if (!player.unlockedCrafting) {
+                    options.push({ text: `(Persuasion) "Teach me your inventing secrets!"`, type: "learn_crafting", cost: 0 });
+                }
+            }
 
 
             const correspondingOverlordRef = gameState.overlords.find(ov => ov.name === character.name);
@@ -4555,6 +4823,7 @@
 
 
             options.push({ text: `Leave`, type: "leave", cost: 0 });
+            }
 
             options.forEach((option, index) => {
                 const optionElement = document.createElement("button");
@@ -4640,6 +4909,18 @@
         function handleInteractionOutcome(success, character, player, optionType, roll) {
             if (success) {
                 switch (optionType) {
+                    case "train_attack":
+                        addInteractionLog(`Krunk grunts. "Fine. We start now. Don't be lazy."`, "log-neutral", player);
+                        player.isTraining = { type: 'attack', duration: 3 };
+                        applyBuff(player, 'GymBuff', { attack: 5, duration: 3 });
+                        addLogEntry("You begin a grueling attack training regimen!", "log-good", player);
+                        break;
+                    case "train_defense":
+                        addInteractionLog(`Krunk cracks his knuckles. "Good choice. A strong shell keeps the goo inside."`, "log-neutral", player);
+                        player.isTraining = { type: 'defense', duration: 3 };
+                        applyBuff(player, 'GymBuff', { defense: 5, duration: 3 });
+                        addLogEntry("You begin an intense defensive training regimen!", "log-good", player);
+                        break;
                     case "quest_kill_imps":
                         addInteractionLog(`Vaggie nods grimly. "Those little bastards are everywhere. Thin the herd."`, "log-neutral", player);
                         grantQuest(player, 'kill_imps');
@@ -4705,6 +4986,11 @@
                         addInteractionLog(`${character.name} signs a soul contract with ${player.name}! You gained ${soulDealReward} money.`, "log-special", player);
                         player.money = Number(player.money) + soulDealReward;
                         break;
+                    case "learn_crafting":
+                        addInteractionLog(`Sir Pentious scoffs. "My geniusss is not for the faint of heart! But... your ambition is... intriguing. Very well, I shall teach you the basics!"`, "log-special", player);
+                        player.unlockedCrafting = true;
+                        addLogEntry("You have unlocked the ability to Craft items!", "log-good", player);
+                        break;
                     case "attempt_enslave":
                          const enslavedTarget = {
                             name: character.name,
@@ -4721,6 +5007,10 @@
                 }
             } else {
                 switch (optionType) {
+                    case "train_attack":
+                    case "train_defense":
+                        addInteractionLog(`Krunk scoffs. "You're not serious. Come back when you are."`, "log-bad", player);
+                        break;
                     case "friendly_chat": addInteractionLog(`${character.name} brushes off ${player.name}.`, "log-neutral", player); break;
                     case "intimidate_chat":
                         addInteractionLog(`${character.name} scoffs at ${player.name}'s attempt to intimidate. (-5 HP)`, "log-bad", player);
@@ -4741,6 +5031,9 @@
                     case "make_soul_deal":
                         addInteractionLog(`${character.name}: "You're not worthy of my contracts! Prepare to be disciplined!"`, "log-danger", player);
                         startCombat("challenge", player);
+                        break;
+                    case "learn_crafting":
+                        addInteractionLog(`Sir Pentious hisses, "My ssecrets are my own, you fool! Begone from my sssight!"`, "log-bad", player);
                         break;
                     case "attempt_enslave":
                         addInteractionLog(`${character.name} resists ${player.name}'s attempt and counterattacks!`, "log-danger", player);
@@ -4799,6 +5092,26 @@
             completeAction(player);
         }
 
+        function handleExterminationEncounter(player) {
+            addLogEntry("The sky bleeds red. The Extermination is upon you! You cannot proceed normally.", "log-danger", player);
+
+            // Disable all normal actions
+            Array.from(elements.actionSelector.options).forEach(option => {
+                option.disabled = true;
+            });
+
+            // Add a special, temporary action for the encounter
+            if (!elements.actionSelector.querySelector('option[value="face_extermination"]')) {
+                const encounterOption = document.createElement('option');
+                encounterOption.value = "face_extermination";
+                encounterOption.textContent = "--- FACE THE ANGELS ---";
+                elements.actionSelector.prepend(encounterOption);
+            }
+
+            elements.actionSelector.value = "face_extermination";
+            selectAction(); // This will update the UI to show the new action's description and button
+        }
+
         function startExtermination() {
             gameState.exterminationActive = true;
             gameState.exterminationTurnsLeft = EXTERMINATION_DURATION;
@@ -4822,7 +5135,6 @@
             if (Number(gameState.turn) >= (2 * EXTERMINATION_INTERVAL) && lucifer && !lucifer.visible) {
                 revealOverlord(lucifer, {name:"Demonic Hierarchy"});
             }
-
         }
 
         function endExtermination() {
@@ -4830,6 +5142,12 @@
             const warning = document.querySelector(".extermination-warning");
             if (warning) { warning.remove(); }
             addLogEntry("The extermination has ended. The angels have retreated... for now.", "log-good", {name: "System"});
+             // Re-enable all actions
+            Array.from(elements.actionSelector.options).forEach(option => {
+                option.disabled = false;
+            });
+            const encounterOption = elements.actionSelector.querySelector('option[value="face_extermination"]');
+            if(encounterOption) encounterOption.remove();
         }
 
         // --- AUDIO ---
